@@ -130,6 +130,21 @@ static bool chs_arm64_parse_d_register(const char *text, unsigned *index) {
     return true;
 }
 
+static bool chs_arm64_parse_s_register(const char *text, unsigned *index) {
+    char name[32];
+    uint64_t parsed_number;
+
+    chs_arm64_copy_trimmed(name, sizeof(name), text);
+    if (name[0] != 's') {
+        return false;
+    }
+    if (!chs_parse_u64(name + 1, &parsed_number) || parsed_number > 31u) {
+        return false;
+    }
+    *index = (unsigned) parsed_number;
+    return true;
+}
+
 static bool chs_arm64_parse_immediate(const char *text, int64_t *value) {
     char copy[128];
 
@@ -262,6 +277,10 @@ static uint32_t chs_arm64_encode_orr_alias(bool is_64_bit, unsigned rd, unsigned
     return (is_64_bit ? 0xAA0003E0u : 0x2A0003E0u) | ((uint32_t) rm << 16) | (uint32_t) rd;
 }
 
+static uint32_t chs_arm64_encode_mvn_alias(bool is_64_bit, unsigned rd, unsigned rm) {
+    return (is_64_bit ? 0xAA2003E0u : 0x2A2003E0u) | ((uint32_t) rm << 16) | (uint32_t) rd;
+}
+
 static uint32_t chs_arm64_encode_logical_register(const char *mnemonic,
                                                   bool is_64_bit,
                                                   unsigned rd,
@@ -345,6 +364,16 @@ static uint32_t chs_arm64_encode_fp64_load_store_unsigned(bool is_load,
     return base | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
 }
 
+static uint32_t chs_arm64_encode_fp32_load_store_unsigned(bool is_load,
+                                                           unsigned rt,
+                                                           unsigned rn,
+                                                           uint32_t imm12) {
+    uint32_t base;
+
+    base = is_load ? 0xBD400000u : 0xBD000000u;
+    return base | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
+}
+
 static uint32_t chs_arm64_encode_ldrsb_unsigned(bool destination_is_64,
                                                 unsigned rt,
                                                 unsigned rn,
@@ -352,6 +381,16 @@ static uint32_t chs_arm64_encode_ldrsb_unsigned(bool destination_is_64,
     uint32_t base;
 
     base = destination_is_64 ? 0x39C00000u : 0x39800000u;
+    return base | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
+}
+
+static uint32_t chs_arm64_encode_ldrsh_unsigned(bool destination_is_64,
+                                                unsigned rt,
+                                                unsigned rn,
+                                                uint32_t imm12) {
+    uint32_t base;
+
+    base = destination_is_64 ? 0x79C00000u : 0x79800000u;
     return base | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
 }
 
@@ -378,6 +417,10 @@ static uint32_t chs_arm64_encode_branch_imm(bool link, int64_t delta) {
 
     imm26 = (uint32_t) ((delta >> 2) & 0x03ffffff);
     return (link ? 0x94000000u : 0x14000000u) | imm26;
+}
+
+static uint32_t chs_arm64_encode_branch_register(bool link, unsigned rn) {
+    return (link ? 0xD63F0000u : 0xD61F0000u) | ((uint32_t) rn << 5);
 }
 
 static uint32_t chs_arm64_encode_mul(bool is_64_bit,
@@ -447,29 +490,40 @@ static uint32_t chs_arm64_encode_fmov_x_from_d(unsigned xd, unsigned dn) {
     return 0x9E660000u | ((uint32_t) dn << 5) | (uint32_t) xd;
 }
 
+static uint32_t chs_arm64_encode_fmov_s_from_w(unsigned sd, unsigned wn) {
+    return 0x1E270000u | ((uint32_t) wn << 5) | (uint32_t) sd;
+}
+
+static uint32_t chs_arm64_encode_fmov_w_from_s(unsigned wd, unsigned sn) {
+    return 0x1E260000u | ((uint32_t) sn << 5) | (uint32_t) wd;
+}
+
 static uint32_t chs_arm64_encode_fcmp(bool compare_zero,
+                                      bool is_double,
                                       unsigned dn,
                                       unsigned dm) {
     if (compare_zero) {
-        return 0x1E602008u | ((uint32_t) dn << 5);
+        return (is_double ? 0x1E602008u : 0x1E202008u) | ((uint32_t) dn << 5);
     }
-    return 0x1E602000u | ((uint32_t) dm << 16) | ((uint32_t) dn << 5);
+    return (is_double ? 0x1E602000u : 0x1E202000u) |
+           ((uint32_t) dm << 16) | ((uint32_t) dn << 5);
 }
 
 static uint32_t chs_arm64_encode_fp_arith(const char *mnemonic,
+                                          bool is_double,
                                           unsigned dd,
                                           unsigned dn,
                                           unsigned dm) {
     uint32_t base;
 
     if (strcmp(mnemonic, "fadd") == 0) {
-        base = 0x1E602800u;
+        base = is_double ? 0x1E602800u : 0x1E202800u;
     } else if (strcmp(mnemonic, "fsub") == 0) {
-        base = 0x1E603800u;
+        base = is_double ? 0x1E603800u : 0x1E203800u;
     } else if (strcmp(mnemonic, "fmul") == 0) {
-        base = 0x1E600800u;
+        base = is_double ? 0x1E600800u : 0x1E200800u;
     } else {
-        base = 0x1E601800u;
+        base = is_double ? 0x1E601800u : 0x1E201800u;
     }
     return base | ((uint32_t) dm << 16) | ((uint32_t) dn << 5) | (uint32_t) dd;
 }
@@ -490,16 +544,34 @@ static uint32_t chs_arm64_encode_fcvt_to_int(bool unsigned_result,
 
 static uint32_t chs_arm64_encode_int_to_fcvt(bool unsigned_source,
                                              bool source_is_64,
+                                             bool destination_is_double,
                                              unsigned dd,
                                              unsigned rn) {
     uint32_t base;
 
     if (unsigned_source) {
-        base = source_is_64 ? 0x9E630000u : 0x1E630000u;
+        if (source_is_64) {
+            base = destination_is_double ? 0x9E630000u : 0x9E230000u;
+        } else {
+            base = destination_is_double ? 0x1E630000u : 0x1E230000u;
+        }
     } else {
-        base = source_is_64 ? 0x9E620000u : 0x1E620000u;
+        if (source_is_64) {
+            base = destination_is_double ? 0x9E620000u : 0x9E220000u;
+        } else {
+            base = destination_is_double ? 0x1E620000u : 0x1E220000u;
+        }
     }
     return base | ((uint32_t) rn << 5) | (uint32_t) dd;
+}
+
+static uint32_t chs_arm64_encode_fcvt_scalar(bool to_double,
+                                             unsigned vd,
+                                             unsigned vn) {
+    uint32_t base;
+
+    base = to_double ? 0x1E22C000u : 0x1E624000u;
+    return base | ((uint32_t) vn << 5) | (uint32_t) vd;
 }
 
 static uint32_t chs_arm64_encode_cond_branch(unsigned condition, int64_t delta) {
@@ -566,8 +638,30 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
     encoded->operands = operands_text;
     operand_count = chs_arm64_split_operands(operands_text, operands);
 
-    if (strcmp(mnemonic, "ret") == 0) {
+    if (strcmp(mnemonic, "ret") == 0 && (operand_count == 0 || operand_count == 1)) {
+        if (operand_count == 1) {
+            ChsArm64Register source;
+
+            if (!chs_arm64_parse_register(operands[0], &source) || !source.is_64_bit || source.is_sp || source.is_zero) {
+                chs_set_error(error, "invalid ret operand: %s", operands[0]);
+                return false;
+            }
+            encoded->encoded = 0xD65F0000u | ((uint32_t) source.index << 5);
+            return true;
+        }
         encoded->encoded = 0xD65F03C0u;
+        return true;
+    }
+
+    if ((strcmp(mnemonic, "br") == 0 || strcmp(mnemonic, "blr") == 0) && operand_count == 1) {
+        ChsArm64Register target;
+
+        if (!chs_arm64_parse_register(operands[0], &target) || !target.is_64_bit || target.is_sp || target.is_zero) {
+            chs_set_error(error, "invalid %s operand: %s", mnemonic, operands[0]);
+            return false;
+        }
+        encoded->encoded = chs_arm64_encode_branch_register(strcmp(mnemonic, "blr") == 0,
+                                                            target.index);
         return true;
     }
 
@@ -595,9 +689,30 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
         return true;
     }
 
+    if (strcmp(mnemonic, "mvn") == 0 && operand_count == 2) {
+        ChsArm64Register destination;
+        ChsArm64Register source;
+
+        if (!chs_arm64_parse_register(operands[0], &destination) ||
+            !chs_arm64_parse_register(operands[1], &source)) {
+            chs_set_error(error, "invalid mvn operands: %s", operands_text);
+            return false;
+        }
+        if (destination.is_sp || source.is_sp || destination.is_64_bit != source.is_64_bit) {
+            chs_set_error(error, "mvn register width mismatch: %s", operands_text);
+            return false;
+        }
+        encoded->encoded = chs_arm64_encode_mvn_alias(destination.is_64_bit,
+                                                      destination.index,
+                                                      source.index);
+        return true;
+    }
+
     if (strcmp(mnemonic, "fmov") == 0 && operand_count == 2) {
         unsigned dd;
         unsigned dn;
+        unsigned sd;
+        unsigned sn;
         ChsArm64Register xr;
 
         if (chs_arm64_parse_d_register(operands[0], &dd) &&
@@ -610,25 +725,42 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
             encoded->encoded = chs_arm64_encode_fmov_x_from_d(xr.index, dn);
             return true;
         }
+        if (chs_arm64_parse_s_register(operands[0], &sd) &&
+            chs_arm64_parse_register(operands[1], &xr) && !xr.is_64_bit && !xr.is_sp) {
+            encoded->encoded = chs_arm64_encode_fmov_s_from_w(sd, xr.index);
+            return true;
+        }
+        if (chs_arm64_parse_register(operands[0], &xr) && !xr.is_64_bit && !xr.is_sp &&
+            chs_arm64_parse_s_register(operands[1], &sn)) {
+            encoded->encoded = chs_arm64_encode_fmov_w_from_s(xr.index, sn);
+            return true;
+        }
         chs_set_error(error, "invalid fmov operands: %s", operands_text);
         return false;
     }
 
     if (strcmp(mnemonic, "fcmp") == 0 && operand_count == 2) {
+        bool is_double;
         unsigned dn;
         unsigned dm;
         int64_t immediate;
 
-        if (!chs_arm64_parse_d_register(operands[0], &dn)) {
+        if (chs_arm64_parse_d_register(operands[0], &dn)) {
+            is_double = true;
+        } else if (chs_arm64_parse_s_register(operands[0], &dn)) {
+            is_double = false;
+        } else {
             chs_set_error(error, "invalid fcmp operands: %s", operands_text);
             return false;
         }
-        if (chs_arm64_parse_d_register(operands[1], &dm)) {
-            encoded->encoded = chs_arm64_encode_fcmp(false, dn, dm);
+
+        if ((is_double && chs_arm64_parse_d_register(operands[1], &dm)) ||
+            (!is_double && chs_arm64_parse_s_register(operands[1], &dm))) {
+            encoded->encoded = chs_arm64_encode_fcmp(false, is_double, dn, dm);
             return true;
         }
         if (chs_arm64_parse_immediate(operands[1], &immediate) && immediate == 0) {
-            encoded->encoded = chs_arm64_encode_fcmp(true, dn, 0);
+            encoded->encoded = chs_arm64_encode_fcmp(true, is_double, dn, 0);
             return true;
         }
         chs_set_error(error, "invalid fcmp operands: %s", operands_text);
@@ -638,17 +770,27 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
     if ((strcmp(mnemonic, "fadd") == 0 || strcmp(mnemonic, "fsub") == 0 ||
          strcmp(mnemonic, "fmul") == 0 || strcmp(mnemonic, "fdiv") == 0) &&
         operand_count == 3) {
+        bool is_double;
         unsigned dd;
         unsigned dn;
         unsigned dm;
 
-        if (!chs_arm64_parse_d_register(operands[0], &dd) ||
-            !chs_arm64_parse_d_register(operands[1], &dn) ||
-            !chs_arm64_parse_d_register(operands[2], &dm)) {
+        if (chs_arm64_parse_d_register(operands[0], &dd)) {
+            is_double = true;
+        } else if (chs_arm64_parse_s_register(operands[0], &dd)) {
+            is_double = false;
+        } else {
             chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
         }
-        encoded->encoded = chs_arm64_encode_fp_arith(mnemonic, dd, dn, dm);
+        if ((is_double && (!chs_arm64_parse_d_register(operands[1], &dn) ||
+                           !chs_arm64_parse_d_register(operands[2], &dm))) ||
+            (!is_double && (!chs_arm64_parse_s_register(operands[1], &dn) ||
+                            !chs_arm64_parse_s_register(operands[2], &dm)))) {
+            chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
+            return false;
+        }
+        encoded->encoded = chs_arm64_encode_fp_arith(mnemonic, is_double, dd, dn, dm);
         return true;
     }
 
@@ -672,18 +814,47 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
     if ((strcmp(mnemonic, "ucvtf") == 0 || strcmp(mnemonic, "scvtf") == 0) &&
         operand_count == 2) {
         unsigned dd;
+        bool destination_is_double;
         ChsArm64Register source;
 
-        if (!chs_arm64_parse_d_register(operands[0], &dd) ||
+        if (chs_arm64_parse_d_register(operands[0], &dd)) {
+            destination_is_double = true;
+        } else if (chs_arm64_parse_s_register(operands[0], &dd)) {
+            destination_is_double = false;
+        } else {
+            chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
+            return false;
+        }
+
+        if (
             !chs_arm64_parse_register(operands[1], &source) || source.is_sp) {
             chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
         }
         encoded->encoded = chs_arm64_encode_int_to_fcvt(strcmp(mnemonic, "ucvtf") == 0,
                                                         source.is_64_bit,
+                                                        destination_is_double,
                                                         dd,
                                                         source.index);
         return true;
+    }
+
+    if (strcmp(mnemonic, "fcvt") == 0 && operand_count == 2) {
+        unsigned vd;
+        unsigned vn;
+
+        if (chs_arm64_parse_d_register(operands[0], &vd) &&
+            chs_arm64_parse_s_register(operands[1], &vn)) {
+            encoded->encoded = chs_arm64_encode_fcvt_scalar(true, vd, vn);
+            return true;
+        }
+        if (chs_arm64_parse_s_register(operands[0], &vd) &&
+            chs_arm64_parse_d_register(operands[1], &vn)) {
+            encoded->encoded = chs_arm64_encode_fcvt_scalar(false, vd, vn);
+            return true;
+        }
+        chs_set_error(error, "invalid fcvt operands: %s", operands_text);
+        return false;
     }
 
     if (strcmp(mnemonic, "movz") == 0 && (operand_count == 2 || operand_count == 3)) {
@@ -827,18 +998,21 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
         if ((strcmp(mnemonic, "ldr") == 0 || strcmp(mnemonic, "str") == 0 ||
                 strcmp(mnemonic, "ldrb") == 0 || strcmp(mnemonic, "strb") == 0 ||
                 strcmp(mnemonic, "ldrh") == 0 || strcmp(mnemonic, "strh") == 0 ||
-            strcmp(mnemonic, "ldrsb") == 0) && operand_count == 2) {
+            strcmp(mnemonic, "ldrsb") == 0 || strcmp(mnemonic, "ldrsh") == 0) && operand_count == 2) {
         ChsArm64Register target;
         ChsArm64Register base;
             unsigned d_target;
+            unsigned s_target;
             bool target_is_d;
+            bool target_is_s;
         int64_t immediate;
         bool pre_index;
         bool post_index;
         unsigned element_bits;
 
             target_is_d = chs_arm64_parse_d_register(operands[0], &d_target);
-            if ((!target_is_d && !chs_arm64_parse_register(operands[0], &target)) ||
+            target_is_s = !target_is_d && chs_arm64_parse_s_register(operands[0], &s_target);
+            if ((!target_is_d && !target_is_s && !chs_arm64_parse_register(operands[0], &target)) ||
             !chs_arm64_parse_memory_operand(operands[1], &base, &immediate, &pre_index, &post_index)) {
             chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
@@ -861,8 +1035,30 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
                 return true;
             }
 
+            if (target_is_s) {
+                if (strcmp(mnemonic, "ldr") != 0 && strcmp(mnemonic, "str") != 0) {
+                    chs_set_error(error, "invalid %s destination register: %s", mnemonic, operands[0]);
+                    return false;
+                }
+                immediate /= 4;
+                encoded->encoded = chs_arm64_encode_fp32_load_store_unsigned(mnemonic[0] == 'l',
+                                                                              s_target,
+                                                                              base.index,
+                                                                              (uint32_t) immediate & 0xfffu);
+                return true;
+            }
+
         if (strcmp(mnemonic, "ldrsb") == 0) {
             encoded->encoded = chs_arm64_encode_ldrsb_unsigned(target.is_64_bit,
+                                                                target.index,
+                                                                base.index,
+                                                                (uint32_t) immediate & 0xfffu);
+            return true;
+        }
+
+        if (strcmp(mnemonic, "ldrsh") == 0) {
+            immediate /= 2;
+            encoded->encoded = chs_arm64_encode_ldrsh_unsigned(target.is_64_bit,
                                                                 target.index,
                                                                 base.index,
                                                                 (uint32_t) immediate & 0xfffu);
@@ -1119,8 +1315,8 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
             chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
         }
-        if (destination.is_64_bit != source.is_64_bit) {
-            chs_set_error(error, "%s register width mismatch: %s", mnemonic, operands_text);
+        if (destination.is_sp || source.is_sp) {
+            chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
         }
 
