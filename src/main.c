@@ -8,7 +8,7 @@ static void chs_print_usage(FILE *stream) {
 }
 
 static void chs_print_version(FILE *stream) {
-    fprintf(stream, "chs: CHance Assembler version 0.1.0\n");
+    fprintf(stream, "chs: CHance Assembler version 0.5.0\n");
     fprintf(stream, "chs: Assembly support: arm64, x86_64\n");
     fprintf(stream, "chs: License: OpenAzure License\n");
     fprintf(stream, "chs: Compiled on %s %s\n", __DATE__, __TIME__);
