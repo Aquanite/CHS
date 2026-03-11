@@ -6,6 +6,8 @@
 #define CHS_MH_MAGIC_64 0xfeedfacfu
 #define CHS_CPU_TYPE_ARM64 0x0100000cu
 #define CHS_CPU_SUBTYPE_ARM64_ALL 0u
+#define CHS_CPU_TYPE_BSLASH 0x01004253u
+#define CHS_CPU_SUBTYPE_BSLASH_ALL 0u
 #define CHS_MH_OBJECT 0x1u
 #define CHS_LC_SEGMENT_64 0x19u
 #define CHS_LC_SYMTAB 0x2u
@@ -17,6 +19,13 @@
 #define CHS_ARM64_RELOC_BRANCH26 2u
 #define CHS_ARM64_RELOC_PAGE21 3u
 #define CHS_ARM64_RELOC_PAGEOFF12 4u
+
+#define CHS_BSLASH_RELOC_ABS8 0u
+#define CHS_BSLASH_RELOC_ABS16 1u
+#define CHS_BSLASH_RELOC_ABS32 2u
+#define CHS_BSLASH_RELOC_ABS64 3u
+#define CHS_BSLASH_RELOC_REL8 4u
+#define CHS_BSLASH_RELOC_REL32 5u
 
 typedef struct {
     uint32_t string_index;
@@ -40,6 +49,47 @@ static unsigned chs_macho_log2_align(uint64_t alignment) {
         ++power;
     }
     return power;
+}
+
+static bool chs_macho_arch_info(const ChsObject *object,
+                                uint32_t *cpu_type,
+                                uint32_t *cpu_subtype,
+                                ChsError *error) {
+    switch (object->arch) {
+        case CHS_ARCH_ARM64:
+            *cpu_type = CHS_CPU_TYPE_ARM64;
+            *cpu_subtype = CHS_CPU_SUBTYPE_ARM64_ALL;
+            return true;
+        case CHS_ARCH_BSLASH:
+            *cpu_type = CHS_CPU_TYPE_BSLASH;
+            *cpu_subtype = CHS_CPU_SUBTYPE_BSLASH_ALL;
+            return true;
+        case CHS_ARCH_X86_64:
+            break;
+    }
+
+    chs_set_error(error, "Mach-O writer currently supports ARM64 and BSlash only");
+    return false;
+}
+
+static unsigned chs_macho_relocation_width(const ChsRelocation *relocation) {
+    switch (relocation->kind) {
+        case CHS_RELOC_AARCH64_BRANCH26:
+        case CHS_RELOC_AARCH64_PAGE21:
+        case CHS_RELOC_AARCH64_PAGEOFF12:
+        case CHS_RELOC_BSLASH_ABS32:
+        case CHS_RELOC_BSLASH_REL32:
+            return 2u;
+        case CHS_RELOC_BSLASH_ABS8:
+        case CHS_RELOC_BSLASH_REL8:
+            return 0u;
+        case CHS_RELOC_BSLASH_ABS16:
+            return 1u;
+        case CHS_RELOC_BSLASH_ABS64:
+            return 3u;
+    }
+
+    return 2u;
 }
 
 
@@ -104,11 +154,29 @@ static bool chs_macho_append_relocations(ChsBuffer *buffer,
             case CHS_RELOC_AARCH64_PAGEOFF12:
                 relocation_type = CHS_ARM64_RELOC_PAGEOFF12;
                 break;
+            case CHS_RELOC_BSLASH_ABS8:
+                relocation_type = CHS_BSLASH_RELOC_ABS8;
+                break;
+            case CHS_RELOC_BSLASH_ABS16:
+                relocation_type = CHS_BSLASH_RELOC_ABS16;
+                break;
+            case CHS_RELOC_BSLASH_ABS32:
+                relocation_type = CHS_BSLASH_RELOC_ABS32;
+                break;
+            case CHS_RELOC_BSLASH_ABS64:
+                relocation_type = CHS_BSLASH_RELOC_ABS64;
+                break;
+            case CHS_RELOC_BSLASH_REL8:
+                relocation_type = CHS_BSLASH_RELOC_REL8;
+                break;
+            case CHS_RELOC_BSLASH_REL32:
+                relocation_type = CHS_BSLASH_RELOC_REL32;
+                break;
         }
 
         packed = (symbol_index_map[section->relocations[index].symbol_index] & 0x00ffffffu) |
                  ((section->relocations[index].pc_relative ? 1u : 0u) << 24) |
-                 (2u << 25) |
+                 (chs_macho_relocation_width(&section->relocations[index]) << 25) |
                  (1u << 27) |
                  (relocation_type << 28);
         if (!chs_buffer_append_u32le(buffer, (uint32_t) section->relocations[index].offset, error) ||
@@ -133,6 +201,8 @@ bool chs_write_macho_object(const ChsObject *object, const char *output_path, Ch
     uint32_t relocation_offset;
     uint32_t symbol_table_offset;
     uint32_t string_table_offset;
+    uint32_t cpu_type;
+    uint32_t cpu_subtype;
     uint64_t total_section_size;
     size_t symbol_count;
     size_t index;
@@ -148,8 +218,7 @@ bool chs_write_macho_object(const ChsObject *object, const char *output_path, Ch
     symbol_index_map = NULL;
     success = false;
 
-    if (object->arch != CHS_ARCH_ARM64) {
-        chs_set_error(error, "Mach-O writer currently supports ARM64 only");
+    if (!chs_macho_arch_info(object, &cpu_type, &cpu_subtype, error)) {
         goto cleanup;
     }
 
@@ -241,8 +310,8 @@ bool chs_write_macho_object(const ChsObject *object, const char *output_path, Ch
     string_table_offset = symbol_table_offset + (uint32_t) (symbol_count * 16u);
 
     if (!chs_buffer_append_u32le(&file_buffer, CHS_MH_MAGIC_64, error) ||
-        !chs_buffer_append_u32le(&file_buffer, CHS_CPU_TYPE_ARM64, error) ||
-        !chs_buffer_append_u32le(&file_buffer, CHS_CPU_SUBTYPE_ARM64_ALL, error) ||
+        !chs_buffer_append_u32le(&file_buffer, cpu_type, error) ||
+        !chs_buffer_append_u32le(&file_buffer, cpu_subtype, error) ||
         !chs_buffer_append_u32le(&file_buffer, CHS_MH_OBJECT, error) ||
         !chs_buffer_append_u32le(&file_buffer, object->has_build_version ? 4u : 3u, error) ||
         !chs_buffer_append_u32le(&file_buffer, sizeofcmds, error) ||

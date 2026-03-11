@@ -1,10 +1,13 @@
 #include "chs/common.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 void chs_set_error(ChsError *error, const char *format, ...) {
     va_list arguments;
@@ -251,6 +254,67 @@ bool chs_write_entire_file(const char *path, const uint8_t *data, size_t size, C
     }
 
     fclose(file);
+    return true;
+}
+
+bool chs_make_temp_path(const char *suffix, ChsString *path, ChsError *error) {
+    size_t suffix_length;
+    size_t template_length;
+    char *template;
+    int fd;
+    bool success;
+
+    suffix_length = strlen(suffix);
+    template_length = strlen("/tmp/chsXXXXXX") + suffix_length + 1;
+    template = malloc(template_length);
+    if (template == NULL) {
+        chs_set_error(error, "out of memory creating temp path");
+        return false;
+    }
+
+    snprintf(template, template_length, "/tmp/chsXXXXXX%s", suffix);
+    fd = mkstemps(template, (int) suffix_length);
+    if (fd < 0) {
+        chs_set_error(error, "failed to create temp file: %s", strerror(errno));
+        free(template);
+        return false;
+    }
+
+    close(fd);
+    success = chs_string_assign(path, template, error);
+    free(template);
+    return success;
+}
+
+bool chs_run_process(const char *program, char *const argv[], ChsError *error) {
+    pid_t child;
+    int status;
+
+    child = fork();
+    if (child < 0) {
+        chs_set_error(error, "failed to fork %s: %s", program, strerror(errno));
+        return false;
+    }
+
+    if (child == 0) {
+        execvp(program, argv);
+        _exit(127);
+    }
+
+    if (waitpid(child, &status, 0) < 0) {
+        chs_set_error(error, "failed waiting for %s: %s", program, strerror(errno));
+        return false;
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (WIFEXITED(status)) {
+            chs_set_error(error, "%s exited with status %d", program, WEXITSTATUS(status));
+        } else {
+            chs_set_error(error, "%s terminated abnormally", program);
+        }
+        return false;
+    }
+
     return true;
 }
 

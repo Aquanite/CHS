@@ -1,5 +1,6 @@
 #include "chs/arch.h"
 #include "chs/assembler.h"
+#include "chs/bslash.h"
 #include "chs/object.h"
 
 #include <ctype.h>
@@ -575,7 +576,11 @@ static bool chs_emit_output(const ChsObject *object, const char *output_path, Ch
     if (output_kind == CHS_OUTPUT_MACHO) {
         return chs_write_macho_object(object, output_path, error);
     }
-    return chs_write_elf64_object(object, output_path, error);
+    if (output_kind == CHS_OUTPUT_ELF64) {
+        return chs_write_elf64_object(object, output_path, error);
+    }
+    chs_set_error(error, "output format is not supported by the generic assembler path");
+    return false;
 }
 
 bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
@@ -597,8 +602,16 @@ bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
     current_section_index = (size_t) -1;
     success = false;
 
+    if (options->arch == CHS_ARCH_BSLASH) {
+        return chs_assemble_bslash_file(options, error);
+    }
+
     object.arch = options->arch;
     object.output_kind = options->output_kind;
+    if (options->output_kind == CHS_OUTPUT_BIN) {
+        chs_set_error(error, "--format bin is only supported for --arch bslash");
+        return false;
+    }
     arch_ops = chs_find_arch_ops(options->arch);
     if (arch_ops == NULL) {
         chs_set_error(error, "unsupported architecture kind");

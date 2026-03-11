@@ -37,6 +37,8 @@ bool chs_parse_u64(const char *text, uint64_t *value);
 bool chs_parse_i64(const char *text, int64_t *value);
 bool chs_read_entire_file(const char *path, char **data, size_t *size, ChsError *error);
 bool chs_write_entire_file(const char *path, const uint8_t *data, size_t size, ChsError *error);
+bool chs_make_temp_path(const char *suffix, ChsString *path, ChsError *error);
+bool chs_run_process(const char *program, char *const argv[], ChsError *error);
 uint64_t chs_align_up_u64(uint64_t value, uint64_t alignment);
 uint32_t chs_version_triplet(unsigned major, unsigned minor, unsigned patch);
 

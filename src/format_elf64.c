@@ -7,6 +7,7 @@
 #define CHS_ET_REL 1u
 #define CHS_EM_X86_64 62u
 #define CHS_EM_AARCH64 183u
+#define CHS_EM_BSLASH 0x4253u
 #define CHS_SHT_NULL 0u
 #define CHS_SHT_PROGBITS 1u
 #define CHS_SHT_SYMTAB 2u
@@ -23,6 +24,13 @@
 #define CHS_R_AARCH64_ADR_PREL_PG_HI21 275u
 #define CHS_R_AARCH64_ADD_ABS_LO12_NC 277u
 #define CHS_R_AARCH64_CALL26 283u
+
+#define CHS_R_BSLASH_ABS8 1u
+#define CHS_R_BSLASH_ABS16 2u
+#define CHS_R_BSLASH_ABS32 3u
+#define CHS_R_BSLASH_ABS64 4u
+#define CHS_R_BSLASH_REL8 5u
+#define CHS_R_BSLASH_REL32 6u
 
 typedef struct {
     uint32_t name_index;
@@ -46,7 +54,16 @@ typedef struct {
 } ChsElfSymbol;
 
 static unsigned chs_elf_machine(const ChsObject *object) {
-    return object->arch == CHS_ARCH_X86_64 ? CHS_EM_X86_64 : CHS_EM_AARCH64;
+    switch (object->arch) {
+        case CHS_ARCH_X86_64:
+            return CHS_EM_X86_64;
+        case CHS_ARCH_ARM64:
+            return CHS_EM_AARCH64;
+        case CHS_ARCH_BSLASH:
+            return CHS_EM_BSLASH;
+    }
+
+    return 0;
 }
 
 
@@ -78,6 +95,18 @@ static uint32_t chs_elf_relocation_type(const ChsRelocation *relocation) {
             return CHS_R_AARCH64_ADR_PREL_PG_HI21;
         case CHS_RELOC_AARCH64_PAGEOFF12:
             return CHS_R_AARCH64_ADD_ABS_LO12_NC;
+        case CHS_RELOC_BSLASH_ABS8:
+            return CHS_R_BSLASH_ABS8;
+        case CHS_RELOC_BSLASH_ABS16:
+            return CHS_R_BSLASH_ABS16;
+        case CHS_RELOC_BSLASH_ABS32:
+            return CHS_R_BSLASH_ABS32;
+        case CHS_RELOC_BSLASH_ABS64:
+            return CHS_R_BSLASH_ABS64;
+        case CHS_RELOC_BSLASH_REL8:
+            return CHS_R_BSLASH_REL8;
+        case CHS_RELOC_BSLASH_REL32:
+            return CHS_R_BSLASH_REL32;
     }
     return 0;
 }
