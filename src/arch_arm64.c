@@ -1355,6 +1355,19 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
         return true;
     }
 
+    if (strcmp(mnemonic, "brk") == 0 && operand_count == 1) {
+        int64_t immediate;
+
+        if (!chs_arm64_parse_immediate(operands[0], &immediate) ||
+            immediate < 0 || immediate > 0xffff) {
+            chs_set_error(error, "invalid brk immediate: %s", operands[0]);
+            return false;
+        }
+
+        encoded->encoded = 0xD4200000u | (((uint32_t) immediate & 0xffffu) << 5);
+        return true;
+    }
+
     chs_set_error(error, "unsupported ARM64 instruction: %s %s", mnemonic, operands_text);
     return false;
 }
