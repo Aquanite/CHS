@@ -1,4 +1,5 @@
 #include "chs/bslash.h"
+#include "chs/bslash_embed.h"
 
 #include "chs/common.h"
 #include "chs/object.h"
@@ -11,10 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../../../BSlash/bso_format.h"
-
-#define CHS_BAS_FALLBACK_PATH "../../BSlash/bas/bas"
-#define CHS_BAS_ABSOLUTE_FALLBACK "/Users/nathanhornby/Documents/BSlash/bas/bas"
+#include "chs/bso_format.h"
 
 static const char *chs_bslash_section_name(ChsOutputKind output_kind) {
     return output_kind == CHS_OUTPUT_MACHO ? "__text" : ".text";
@@ -24,51 +22,28 @@ static const char *chs_bslash_segment_name(ChsOutputKind output_kind) {
     return output_kind == CHS_OUTPUT_MACHO ? "__TEXT" : "";
 }
 
-static bool chs_bslash_find_bas_binary(ChsString *path, ChsError *error) {
-    static const char *const fallback_paths[] = {
-        CHS_BAS_FALLBACK_PATH,
-        CHS_BAS_ABSOLUTE_FALLBACK
-    };
-    const char *env_path;
-    size_t index;
-
-    env_path = getenv("CHS_BAS_PATH");
-    if (env_path != NULL && *env_path != '\0') {
-        if (access(env_path, X_OK) == 0) {
-            return chs_string_assign(path, env_path, error);
-        }
-        chs_set_error(error, "CHS_BAS_PATH points to a non-executable BAS binary: %s", env_path);
-        return false;
-    }
-
-    for (index = 0; index < sizeof(fallback_paths) / sizeof(fallback_paths[0]); ++index) {
-        if (access(fallback_paths[index], X_OK) == 0) {
-            return chs_string_assign(path, fallback_paths[index], error);
-        }
-    }
-
-    chs_set_error(error, "unable to locate BAS binary; set CHS_BAS_PATH or place BAS at %s", CHS_BAS_FALLBACK_PATH);
-    return false;
-}
-
-static bool chs_bslash_run_bas(const char *bas_path,
-                               const char *input_path,
+static bool chs_bslash_run_bas(const char *input_path,
                                const char *output_path,
                                bool object_mode,
                                ChsError *error) {
-    char *argv[7];
-    size_t argc;
+    char bas_error[1024];
 
-    argc = 0;
-    argv[argc++] = (char *) bas_path;
-    argv[argc++] = "-o";
-    argv[argc++] = (char *) output_path;
-    if (object_mode) {
-        argv[argc++] = "--object";
+    bas_error[0] = '\0';
+    if (bas_assemble_file(input_path,
+                          output_path,
+                          object_mode,
+                          false,
+                          0,
+                          bas_error,
+                          sizeof(bas_error)) != 0) {
+        if (bas_error[0] != '\0') {
+            chs_set_error(error, "%s", bas_error);
+        } else {
+            chs_set_error(error, "internal BAS assembly failed for %s", input_path);
+        }
+        return false;
     }
-    argv[argc++] = (char *) input_path;
-    argv[argc] = NULL;
-    return chs_run_process(bas_path, argv, error);
+    return true;
 }
 
 static const char *chs_bslash_string_at(const uint8_t *string_table,
@@ -325,22 +300,16 @@ cleanup:
 }
 
 bool chs_assemble_bslash_file(const ChsAssembleOptions *options, ChsError *error) {
-    ChsString bas_path;
     ChsString temp_path;
     ChsObject object;
     bool success;
 
-    memset(&bas_path, 0, sizeof(bas_path));
     memset(&temp_path, 0, sizeof(temp_path));
     memset(&object, 0, sizeof(object));
     success = false;
 
-    if (!chs_bslash_find_bas_binary(&bas_path, error)) {
-        goto cleanup;
-    }
-
     if (options->output_kind == CHS_OUTPUT_BIN) {
-        success = chs_bslash_run_bas(bas_path.data, options->input_path, options->output_path, false, error);
+        success = chs_bslash_run_bas(options->input_path, options->output_path, false, error);
         goto cleanup;
     }
 
@@ -352,7 +321,7 @@ bool chs_assemble_bslash_file(const ChsAssembleOptions *options, ChsError *error
     if (!chs_make_temp_path(".bso", &temp_path, error)) {
         goto cleanup;
     }
-    if (!chs_bslash_run_bas(bas_path.data, options->input_path, temp_path.data, true, error)) {
+    if (!chs_bslash_run_bas(options->input_path, temp_path.data, true, error)) {
         goto cleanup;
     }
     if (!chs_bslash_translate_bso(temp_path.data, options->output_kind, &object, error)) {
@@ -371,6 +340,5 @@ cleanup:
     }
     chs_object_free(&object);
     chs_string_free(&temp_path);
-    chs_string_free(&bas_path);
     return success;
 }
