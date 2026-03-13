@@ -10,7 +10,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#ifndef unlink
+#define unlink _unlink
+#endif
+#else
 #include <unistd.h>
+#endif
 
 #include "chs/bso_format.h"
 

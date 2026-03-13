@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) && !defined(strdup)
+#define strdup _strdup
+#endif
+
 typedef struct {
     bool is_64_bit;
     bool is_sp;

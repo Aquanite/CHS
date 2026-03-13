@@ -6,8 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(_WIN32)
+#include <process.h>
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 void chs_set_error(ChsError *error, const char *format, ...) {
     va_list arguments;
@@ -258,6 +264,51 @@ bool chs_write_entire_file(const char *path, const uint8_t *data, size_t size, C
 }
 
 bool chs_make_temp_path(const char *suffix, ChsString *path, ChsError *error) {
+#if defined(_WIN32)
+    char temp_dir[MAX_PATH + 1];
+    char temp_name[MAX_PATH + 1];
+    DWORD temp_dir_length;
+    char *final_path;
+    size_t suffix_length;
+    bool success;
+
+    temp_dir_length = GetTempPathA((DWORD) sizeof(temp_dir), temp_dir);
+    if (temp_dir_length == 0 || temp_dir_length >= (DWORD) sizeof(temp_dir)) {
+        chs_set_error(error, "failed to query temp directory");
+        return false;
+    }
+
+    if (GetTempFileNameA(temp_dir, "chs", 0, temp_name) == 0) {
+        chs_set_error(error, "failed to create temp file path");
+        return false;
+    }
+
+    suffix_length = strlen(suffix);
+    if (suffix_length == 0) {
+        return chs_string_assign(path, temp_name, error);
+    }
+
+    final_path = malloc(strlen(temp_name) + suffix_length + 1);
+    if (final_path == NULL) {
+        remove(temp_name);
+        chs_set_error(error, "out of memory creating temp path");
+        return false;
+    }
+
+    strcpy(final_path, temp_name);
+    strcat(final_path, suffix);
+    remove(final_path);
+    if (rename(temp_name, final_path) != 0) {
+        chs_set_error(error, "failed to create temp file: %s", strerror(errno));
+        remove(temp_name);
+        free(final_path);
+        return false;
+    }
+
+    success = chs_string_assign(path, final_path, error);
+    free(final_path);
+    return success;
+#else
     size_t suffix_length;
     size_t template_length;
     char *template;
@@ -284,9 +335,24 @@ bool chs_make_temp_path(const char *suffix, ChsString *path, ChsError *error) {
     success = chs_string_assign(path, template, error);
     free(template);
     return success;
+#endif
 }
 
 bool chs_run_process(const char *program, char *const argv[], ChsError *error) {
+#if defined(_WIN32)
+    intptr_t result;
+
+    result = _spawnvp(_P_WAIT, program, (const char *const *) argv);
+    if (result == -1) {
+        chs_set_error(error, "failed to run %s: %s", program, strerror(errno));
+        return false;
+    }
+    if (result != 0) {
+        chs_set_error(error, "%s exited with status %ld", program, (long) result);
+        return false;
+    }
+    return true;
+#else
     pid_t child;
     int status;
 
@@ -316,6 +382,7 @@ bool chs_run_process(const char *program, char *const argv[], ChsError *error) {
     }
 
     return true;
+#endif
 }
 
 uint64_t chs_align_up_u64(uint64_t value, uint64_t alignment) {

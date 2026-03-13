@@ -13,6 +13,10 @@
 #include "chs/bslash_embed.h"
 #include "chs/bso_format.h"
 
+#if defined(_WIN32) && !defined(strdup)
+#define strdup _strdup
+#endif
+
 #if defined(_WIN32) && !defined(_MAX_PATH)
 #define _MAX_PATH 260
 #endif
@@ -465,7 +469,7 @@ static char *duplicate_dirname(const char *path) {
 	ptrdiff_t last_sep = -1;
 	for (size_t i = 0; i < len; ++i) {
 		if (is_path_separator(path[i])) {
-			last_sep = (ssize_t)i;
+			last_sep = (ptrdiff_t)i;
 		}
 	}
 	if (last_sep < 0) {
