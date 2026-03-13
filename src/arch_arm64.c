@@ -7,7 +7,24 @@
 #include <string.h>
 
 #if defined(_WIN32) && !defined(strdup)
-#define strdup _strdup
+static char *chs_local_strdup(const char *value) {
+    size_t length;
+    char *copy;
+
+    if (value == NULL) {
+        return NULL;
+    }
+
+    length = strlen(value) + 1;
+    copy = (char *) malloc(length);
+    if (copy == NULL) {
+        return NULL;
+    }
+
+    memcpy(copy, value, length);
+    return copy;
+}
+#define strdup chs_local_strdup
 #endif
 
 typedef struct {
