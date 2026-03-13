@@ -21,8 +21,9 @@
 #endif
 
 #define MAX_OPERANDS 4
+#define BSLASH_DEFAULT_ORIGIN_BASE 0xA0000000u
 
-static uint32_t g_origin_base = 0;
+static uint32_t g_origin_base = BSLASH_DEFAULT_ORIGIN_BASE;
 typedef enum {
 	ORIGIN_SOURCE_DEFAULT,
 	ORIGIN_SOURCE_CMDLINE,
@@ -37,7 +38,7 @@ static size_t g_error_buffer_size = 0;
 static void fatal(size_t line, const char *fmt, ...);
 
 static void reset_assembler_state(void) {
-	g_origin_base = 0;
+	g_origin_base = BSLASH_DEFAULT_ORIGIN_BASE;
 	g_origin_source = ORIGIN_SOURCE_DEFAULT;
 	g_current_source = NULL;
 }
@@ -167,6 +168,7 @@ static const instr_def_t g_instructions[] = {
 	{"RDBAD", 0xD3, FMT_REG_HIGH, 2},
 	{"RDFLSH", 0xD4, FMT_REG_REG, 2},
 	{"WRFLSH", 0xD5, FMT_REG_REG, 2},
+	{"CICPY", 0xD6, FMT_REG_REG_REG, 3},
 
 	{"ADC", 0x00, FMT_REG_REG, 2},
 	{"ADCI32", 0x01, FMT_REG_IMM32, 6},
