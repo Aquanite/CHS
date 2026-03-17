@@ -1244,6 +1244,39 @@ static void parse_string_directive(char *text, size_t line, byte_buf_t *output) 
 	}
 }
 
+static char *parse_quoted_path_argument(const char *text, const char *directive_name, size_t line) {
+	byte_buf_t path_bytes = {0};
+	const char *after_literal;
+	char *path;
+	char *extra;
+
+	if (text == NULL || *text == '\0') {
+		fatal(line, "%s requires a quoted path", directive_name);
+	}
+	if (*text != '"') {
+		fatal(line, "%s expects a quoted path", directive_name);
+	}
+
+	after_literal = parse_string_literal_bytes(text, line, &path_bytes);
+	path = (char *)malloc(path_bytes.count + 1u);
+	if (path == NULL) {
+		free(path_bytes.data);
+		fatal(line, "out of memory while parsing %s path", directive_name);
+	}
+
+	memcpy(path, path_bytes.data, path_bytes.count);
+	path[path_bytes.count] = '\0';
+	free(path_bytes.data);
+
+	extra = trim((char *)after_literal);
+	if (*extra != '\0') {
+		free(path);
+		fatal(line, "unexpected tokens after %s path", directive_name);
+	}
+
+	return path;
+}
+
 static void maybe_convert_string_operand(parsed_instr_t *instr, const instr_def_t *def, size_t line, string_lit_vec_t *strings) {
 	if (!strings || !instr || !def) {
 		return;
@@ -2563,6 +2596,45 @@ static void write_bso_object(const char *output_path, const byte_buf_t *output, 
 	free(obj_syms);
 }
 
+static void strip_comments_preserve_strings(char *line) {
+	if (!line) {
+		return;
+	}
+	bool in_string = false;
+	bool escape = false;
+	for (char *p = line; *p; ++p) {
+		if (in_string) {
+			if (escape) {
+				escape = false;
+				continue;
+			}
+			if (*p == '\\') {
+				escape = true;
+				continue;
+			}
+			if (*p == '"') {
+				in_string = false;
+			}
+			continue;
+		}
+
+		if (*p == '"') {
+			in_string = true;
+			continue;
+		}
+
+		if (*p == ';') {
+			*p = '\0';
+			break;
+		}
+
+		if (p[0] == '/' && p[1] == '/') {
+			*p = '\0';
+			break;
+		}
+	}
+}
+
 static void process_source_file(const char *path, symbol_vec_t *symbols, program_vec_t *program, uint32_t *pc, path_vec_t *included_files, string_lit_vec_t *string_literals) {
 	FILE *fp = fopen(path, "r");
 	if (!fp) {
@@ -2584,15 +2656,7 @@ static void process_source_file(const char *path, symbol_vec_t *symbols, program
 			*newline = '\0';
 		}
 
-		char *comment = strstr(line, "//");
-		if (comment) {
-			*comment = '\0';
-		}
-
-		char *semi = strchr(line, ';');
-		if (semi) {
-			*semi = '\0';
-		}
+		strip_comments_preserve_strings(line);
 
 		char *cursor = trim(line);
 		if (*cursor == '\0') {
@@ -2659,27 +2723,7 @@ static void process_source_file(const char *path, symbol_vec_t *symbols, program
 			directive[dir_len] = '\0';
 			char *rest = trim(directive_cursor + dir_len);
 			if (strcmp(directive, "%INCLUDEFILE") == 0) {
-				if (*rest == '\0') {
-					fatal(line_no, "%%includefile requires a quoted path");
-				}
-				if (*rest != '"') {
-					fatal(line_no, "%%includefile expects a quoted path");
-				}
-				byte_buf_t include_bytes = {0};
-				const char *after_literal = parse_string_literal_bytes(rest, line_no, &include_bytes);
-				char *include_arg = (char *)malloc(include_bytes.count + 1);
-				if (!include_arg) {
-					free(include_bytes.data);
-					fatal(line_no, "out of memory while parsing include path");
-				}
-				memcpy(include_arg, include_bytes.data, include_bytes.count);
-				include_arg[include_bytes.count] = '\0';
-				free(include_bytes.data);
-				char *extra = trim((char *)after_literal);
-				if (*extra != '\0') {
-					free(include_arg);
-					fatal(line_no, "unexpected tokens after %%includefile path");
-				}
+				char *include_arg = parse_quoted_path_argument(rest, "%%includefile", line_no);
 				char *joined = join_paths(base_dir, include_arg);
 				if (!joined) {
 					free(include_arg);
@@ -2707,6 +2751,111 @@ static void process_source_file(const char *path, symbol_vec_t *symbols, program
 				}
 				free(joined);
 				free(include_arg);
+				continue;
+			}
+			if (strcmp(directive, "%INCBIN") == 0) {
+				if (force_include) {
+					fatal(line_no, "'force' modifier is only valid with %%includefile");
+				}
+				char *incbin_arg = parse_quoted_path_argument(rest, "%%incbin", line_no);
+				char *joined = join_paths(base_dir, incbin_arg);
+				if (!joined) {
+					free(incbin_arg);
+					fatal(line_no, "failed to resolve incbin path");
+				}
+				char *canon = canonicalize_path(joined);
+				if (!canon) {
+					int saved_errno = errno;
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "failed to resolve incbin '%s': %s", incbin_arg, strerror(saved_errno));
+				}
+
+				FILE *incbin_file = fopen(canon, "rb");
+				if (!incbin_file) {
+					int saved_errno = errno;
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "failed to open incbin '%s': %s", incbin_arg, strerror(saved_errno));
+				}
+				if (fseek(incbin_file, 0, SEEK_END) != 0) {
+					int saved_errno = errno;
+					fclose(incbin_file);
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "failed to seek incbin '%s': %s", incbin_arg, strerror(saved_errno));
+				}
+				long file_size = ftell(incbin_file);
+				if (file_size < 0) {
+					int saved_errno = errno;
+					fclose(incbin_file);
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "failed to determine size for incbin '%s': %s", incbin_arg, strerror(saved_errno));
+				}
+				if (fseek(incbin_file, 0, SEEK_SET) != 0) {
+					int saved_errno = errno;
+					fclose(incbin_file);
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "failed to rewind incbin '%s': %s", incbin_arg, strerror(saved_errno));
+				}
+
+				size_t incbin_size = (size_t)file_size;
+				if (incbin_size > (size_t)UINT32_MAX) {
+					fclose(incbin_file);
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "%%incbin file '%s' is too large", incbin_arg);
+				}
+				if ((uint64_t)local_pc + (uint64_t)incbin_size > (uint64_t)UINT32_MAX) {
+					fclose(incbin_file);
+					free(canon);
+					free(joined);
+					free(incbin_arg);
+					fatal(line_no, "%%incbin data would overflow address space");
+				}
+				uint8_t *incbin_bytes = NULL;
+				if (incbin_size > 0) {
+					incbin_bytes = (uint8_t *)malloc(incbin_size);
+					if (!incbin_bytes) {
+						fclose(incbin_file);
+						free(canon);
+						free(joined);
+						free(incbin_arg);
+						fatal(line_no, "out of memory while loading %%incbin '%s'", incbin_arg);
+					}
+					if (fread(incbin_bytes, 1, incbin_size, incbin_file) != incbin_size) {
+						int saved_errno = errno;
+						fclose(incbin_file);
+						free(incbin_bytes);
+						free(canon);
+						free(joined);
+						free(incbin_arg);
+						fatal(line_no, "failed to read incbin '%s': %s", incbin_arg, strerror(saved_errno));
+					}
+				}
+				fclose(incbin_file);
+
+				program_item_t item = (program_item_t){0};
+				item.kind = ITEM_DATA_BYTES;
+				item.offset = local_pc;
+				item.size_bytes = (uint32_t)incbin_size;
+				item.line = line_no;
+				item.u.data.bytes = incbin_bytes;
+				item.u.data.count = incbin_size;
+				ensure_program_capacity(program);
+				program->data[program->count++] = item;
+				local_pc += item.size_bytes;
+
+				free(canon);
+				free(joined);
+				free(incbin_arg);
 				continue;
 			}
 			bool handled = false;
