@@ -415,6 +415,12 @@ static uint32_t chs_arm64_encode_ldrsh_unsigned(bool destination_is_64,
     return base | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
 }
 
+static uint32_t chs_arm64_encode_ldrsw_unsigned(unsigned rt,
+                                                unsigned rn,
+                                                uint32_t imm12) {
+    return 0xB9800000u | (imm12 << 10) | ((uint32_t) rn << 5) | (uint32_t) rt;
+}
+
 static uint32_t chs_arm64_encode_stp_ldp(bool is_load,
                                          bool post_index,
                                          unsigned rt,
@@ -1017,6 +1023,7 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
     }
 
         if ((strcmp(mnemonic, "ldr") == 0 || strcmp(mnemonic, "str") == 0 ||
+            strcmp(mnemonic, "ldrsw") == 0 ||
                 strcmp(mnemonic, "ldrb") == 0 || strcmp(mnemonic, "strb") == 0 ||
                 strcmp(mnemonic, "ldrh") == 0 || strcmp(mnemonic, "strh") == 0 ||
             strcmp(mnemonic, "ldrsb") == 0 || strcmp(mnemonic, "ldrsh") == 0) && operand_count == 2) {
@@ -1081,6 +1088,18 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
             immediate /= 2;
             encoded->encoded = chs_arm64_encode_ldrsh_unsigned(target.is_64_bit,
                                                                 target.index,
+                                                                base.index,
+                                                                (uint32_t) immediate & 0xfffu);
+            return true;
+        }
+
+        if (strcmp(mnemonic, "ldrsw") == 0) {
+            if (!target.is_64_bit || target.is_sp) {
+                chs_set_error(error, "invalid ldrsw destination register: %s", operands[0]);
+                return false;
+            }
+            immediate /= 4;
+            encoded->encoded = chs_arm64_encode_ldrsw_unsigned(target.index,
                                                                 base.index,
                                                                 (uint32_t) immediate & 0xfffu);
             return true;
