@@ -6,6 +6,8 @@
 #define CHS_MH_MAGIC_64 0xfeedfacfu
 #define CHS_CPU_TYPE_ARM64 0x0100000cu
 #define CHS_CPU_SUBTYPE_ARM64_ALL 0u
+#define CHS_CPU_TYPE_X86_64 0x01000007u
+#define CHS_CPU_SUBTYPE_X86_64_ALL 3u
 #define CHS_CPU_TYPE_BSLASH 0x01004253u
 #define CHS_CPU_SUBTYPE_BSLASH_ALL 0u
 #define CHS_MH_OBJECT 0x1u
@@ -19,6 +21,10 @@
 #define CHS_ARM64_RELOC_BRANCH26 2u
 #define CHS_ARM64_RELOC_PAGE21 3u
 #define CHS_ARM64_RELOC_PAGEOFF12 4u
+
+#define CHS_X86_64_RELOC_UNSIGNED 0u
+#define CHS_X86_64_RELOC_SIGNED 1u
+#define CHS_X86_64_RELOC_BRANCH 2u
 
 #define CHS_BSLASH_RELOC_ABS8 0u
 #define CHS_BSLASH_RELOC_ABS16 1u
@@ -65,10 +71,12 @@ static bool chs_macho_arch_info(const ChsObject *object,
             *cpu_subtype = CHS_CPU_SUBTYPE_BSLASH_ALL;
             return true;
         case CHS_ARCH_X86_64:
-            break;
+            *cpu_type = CHS_CPU_TYPE_X86_64;
+            *cpu_subtype = CHS_CPU_SUBTYPE_X86_64_ALL;
+            return true;
     }
 
-    chs_set_error(error, "Mach-O writer currently supports ARM64 and BSlash only");
+    chs_set_error(error, "Mach-O writer currently supports ARM64, x86_64, and BSlash only");
     return false;
 }
 
@@ -77,6 +85,9 @@ static unsigned chs_macho_relocation_width(const ChsRelocation *relocation) {
         case CHS_RELOC_AARCH64_BRANCH26:
         case CHS_RELOC_AARCH64_PAGE21:
         case CHS_RELOC_AARCH64_PAGEOFF12:
+        case CHS_RELOC_X86_64_BRANCH32:
+        case CHS_RELOC_X86_64_SIGNED32:
+        case CHS_RELOC_X86_64_ABS32:
         case CHS_RELOC_BSLASH_ABS32:
         case CHS_RELOC_BSLASH_REL32:
             return 2u;
@@ -85,6 +96,8 @@ static unsigned chs_macho_relocation_width(const ChsRelocation *relocation) {
             return 0u;
         case CHS_RELOC_BSLASH_ABS16:
             return 1u;
+        case CHS_RELOC_AARCH64_ABS64:
+        case CHS_RELOC_X86_64_ABS64:
         case CHS_RELOC_BSLASH_ABS64:
             return 3u;
     }
@@ -153,6 +166,19 @@ static bool chs_macho_append_relocations(ChsBuffer *buffer,
                 break;
             case CHS_RELOC_AARCH64_PAGEOFF12:
                 relocation_type = CHS_ARM64_RELOC_PAGEOFF12;
+                break;
+            case CHS_RELOC_AARCH64_ABS64:
+                relocation_type = CHS_ARM64_RELOC_UNSIGNED;
+                break;
+            case CHS_RELOC_X86_64_BRANCH32:
+                relocation_type = CHS_X86_64_RELOC_BRANCH;
+                break;
+            case CHS_RELOC_X86_64_SIGNED32:
+                relocation_type = CHS_X86_64_RELOC_SIGNED;
+                break;
+            case CHS_RELOC_X86_64_ABS32:
+            case CHS_RELOC_X86_64_ABS64:
+                relocation_type = CHS_X86_64_RELOC_UNSIGNED;
                 break;
             case CHS_RELOC_BSLASH_ABS8:
                 relocation_type = CHS_BSLASH_RELOC_ABS8;

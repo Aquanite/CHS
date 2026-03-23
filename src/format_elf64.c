@@ -24,6 +24,7 @@
 #define CHS_R_AARCH64_ADR_PREL_PG_HI21 275u
 #define CHS_R_AARCH64_ADD_ABS_LO12_NC 277u
 #define CHS_R_AARCH64_CALL26 283u
+#define CHS_R_AARCH64_ABS64 257u
 
 #define CHS_R_BSLASH_ABS8 1u
 #define CHS_R_BSLASH_ABS16 2u
@@ -95,6 +96,8 @@ static uint32_t chs_elf_relocation_type(const ChsRelocation *relocation) {
             return CHS_R_AARCH64_ADR_PREL_PG_HI21;
         case CHS_RELOC_AARCH64_PAGEOFF12:
             return CHS_R_AARCH64_ADD_ABS_LO12_NC;
+        case CHS_RELOC_AARCH64_ABS64:
+            return CHS_R_AARCH64_ABS64;
         case CHS_RELOC_BSLASH_ABS8:
             return CHS_R_BSLASH_ABS8;
         case CHS_RELOC_BSLASH_ABS16:
@@ -107,6 +110,14 @@ static uint32_t chs_elf_relocation_type(const ChsRelocation *relocation) {
             return CHS_R_BSLASH_REL8;
         case CHS_RELOC_BSLASH_REL32:
             return CHS_R_BSLASH_REL32;
+            case CHS_RELOC_X86_64_ABS64:
+                return 1u;
+            case CHS_RELOC_X86_64_BRANCH32:
+                return 4u;
+            case CHS_RELOC_X86_64_SIGNED32:
+                return 2u;
+            case CHS_RELOC_X86_64_ABS32:
+                return 10u;
     }
     return 0;
 }

@@ -134,6 +134,10 @@ static bool chs_parse_byte_directive(ChsSection *section, char *arguments, ChsEr
     for (index = 0; index < count; ++index) {
         uint64_t value;
 
+        if (parts[index][0] == '\0') {
+            continue;
+        }
+
         if (!chs_parse_u64(parts[index], &value) || value > 0xffu) {
             chs_set_error(error, "invalid .byte value: %s", parts[index]);
             return false;
@@ -193,6 +197,82 @@ static bool chs_parse_integer_directive(ChsSection *section,
             return false;
         }
     }
+    return true;
+}
+
+static bool chs_parse_quad_directive(ChsObject *object,
+                                     size_t section_index,
+                                     char *arguments,
+                                     const char *directive,
+                                     ChsError *error) {
+    ChsSection *section;
+    char *parts[256];
+    size_t count;
+    size_t index;
+
+    section = &object->sections[section_index];
+    count = chs_split_csv(arguments, parts, 256);
+    for (index = 0; index < count; ++index) {
+        uint64_t uvalue;
+        int64_t svalue;
+        char *token;
+
+        token = chs_trim(parts[index]);
+        if (*token == '\0') {
+            continue;
+        }
+
+        if (chs_parse_i64(token, &svalue)) {
+            uvalue = (uint64_t) svalue;
+            if (!chs_append_integer_bytes(section, uvalue, 8, error)) {
+                return false;
+            }
+            continue;
+        }
+        if (chs_parse_u64(token, &uvalue)) {
+            if (!chs_append_integer_bytes(section, uvalue, 8, error)) {
+                return false;
+            }
+            continue;
+        }
+
+        {
+            size_t symbol_index;
+            uint64_t relocation_offset;
+            ChsRelocationKind relocation_kind;
+
+            if (!chs_object_get_or_create_symbol(object, token, &symbol_index, error)) {
+                return false;
+            }
+
+            switch (object->arch) {
+                case CHS_ARCH_ARM64:
+                    relocation_kind = CHS_RELOC_AARCH64_ABS64;
+                    break;
+                case CHS_ARCH_X86_64:
+                    relocation_kind = CHS_RELOC_X86_64_ABS64;
+                    break;
+                case CHS_ARCH_BSLASH:
+                    relocation_kind = CHS_RELOC_BSLASH_ABS64;
+                    break;
+            }
+
+            relocation_offset = section->size;
+            if (!chs_append_integer_bytes(section, 0, 8, error)) {
+                return false;
+            }
+            if (!chs_section_add_relocation(section,
+                                            relocation_offset,
+                                            relocation_kind,
+                                            symbol_index,
+                                            0,
+                                            false,
+                                            error)) {
+                return false;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -465,6 +545,20 @@ static bool chs_handle_directive(ChsObject *object,
         return chs_section_align(&object->sections[*current_section_index], alignment, error);
     }
 
+    if (strcmp(directive, ".balign") == 0 || strcmp(directive, ".align") == 0) {
+        uint64_t alignment;
+
+        if (*current_section_index == (size_t) -1) {
+            chs_set_error(error, "%s without an active section", directive);
+            return false;
+        }
+        if (!chs_parse_u64(chs_trim(arguments), &alignment) || alignment == 0) {
+            chs_set_error(error, "invalid %s value: %s", directive, arguments);
+            return false;
+        }
+        return chs_section_align(&object->sections[*current_section_index], alignment, error);
+    }
+
     if (strcmp(directive, ".byte") == 0) {
         if (*current_section_index == (size_t) -1) {
             chs_set_error(error, ".byte without an active section");
@@ -498,8 +592,11 @@ static bool chs_handle_directive(ChsObject *object,
             chs_set_error(error, "%s without an active section", directive);
             return false;
         }
-        return chs_parse_integer_directive(&object->sections[*current_section_index],
-                                           arguments, 8, directive, error);
+        return chs_parse_quad_directive(object,
+                                        *current_section_index,
+                                        arguments,
+                                        directive,
+                                        error);
     }
 
     if (strcmp(directive, ".zero") == 0 || strcmp(directive, ".space") == 0) {
@@ -556,6 +653,8 @@ static bool chs_handle_directive(ChsObject *object,
     if (strncmp(directive, ".cfi_", 5) == 0 ||
         strcmp(directive, ".type") == 0 ||
         strcmp(directive, ".size") == 0 ||
+        strcmp(directive, ".intel_syntax") == 0 ||
+        strcmp(directive, ".att_syntax") == 0 ||
         strcmp(directive, ".ident") == 0 ||
         strcmp(directive, ".subsections_via_symbols") == 0) {
         return true;
@@ -704,7 +803,7 @@ bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
             char *space;
             char *mnemonic;
             char *operands;
-            uint8_t placeholder[4] = {0, 0, 0, 0};
+            uint8_t slot_size;
 
             if (current_section_index == (size_t) -1) {
                 chs_set_error(error, "instruction outside of a section: %s", line);
@@ -731,7 +830,11 @@ bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
                                                     error)) {
                 goto cleanup;
             }
-            if (!chs_section_append_data(&object.sections[current_section_index], placeholder, sizeof(placeholder), error)) {
+            slot_size = arch_ops->instruction_slot_size;
+            if (slot_size == 0) {
+                slot_size = 4;
+            }
+            if (!chs_section_append_zeros(&object.sections[current_section_index], slot_size, error)) {
                 goto cleanup;
             }
         }
@@ -753,7 +856,40 @@ bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
                                           error)) {
             goto cleanup;
         }
-        chs_patch_u32le(section->data + instruction->offset, encoded.encoded);
+        {
+            uint8_t slot_size;
+            uint8_t encoded_size;
+            uint8_t fill_byte;
+
+            slot_size = arch_ops->instruction_slot_size;
+            if (slot_size == 0) {
+                slot_size = 4;
+            }
+
+            encoded_size = encoded.size;
+            fill_byte = encoded.fill_byte;
+            if (encoded_size == 0) {
+                encoded_size = 4;
+                chs_patch_u32le(section->data + instruction->offset, encoded.encoded);
+            } else {
+                memcpy(section->data + instruction->offset, encoded.bytes, encoded_size);
+            }
+
+            if (encoded_size > slot_size) {
+                chs_set_error(error,
+                              "encoded instruction '%s' exceeds slot size (%u > %u)",
+                              instruction->mnemonic,
+                              (unsigned) encoded_size,
+                              (unsigned) slot_size);
+                goto cleanup;
+            }
+
+            if (encoded_size < slot_size) {
+                memset(section->data + instruction->offset + encoded_size,
+                       fill_byte,
+                       (size_t) (slot_size - encoded_size));
+            }
+        }
         if (encoded.uses_symbol) {
             size_t symbol_index;
             if (!chs_object_get_or_create_symbol(&object, encoded.symbol_name, &symbol_index, error)) {
@@ -761,10 +897,10 @@ bool chs_assemble_file(const ChsAssembleOptions *options, ChsError *error) {
                 goto cleanup;
             }
             if (!chs_section_add_relocation(section,
-                                           instruction->offset,
+                                           instruction->offset + encoded.relocation_offset,
                                            encoded.relocation_kind,
                                            symbol_index,
-                                           0,
+                                           encoded.relocation_addend,
                                            encoded.pc_relative,
                                            error)) {
                 free((void *) encoded.symbol_name);
