@@ -2,16 +2,17 @@ CC := clang
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude
 LDFLAGS :=
 BUILD_DIR := build
-TARGET := $(BUILD_DIR)/chs
-TARGET_EXE := $(TARGET).exe
 PREFIX ?= /usr/local
 BIN_DIR := $(PREFIX)/bin
+EXE_SUFFIX :=
 BIN_NAME := chs
 
 ifeq ($(OS),Windows_NT)
+EXE_SUFFIX := .exe
 BIN_NAME := chs.exe
 endif
 
+TARGET := $(BUILD_DIR)/chs$(EXE_SUFFIX)
 SOURCES := $(wildcard src/*.c)
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
@@ -20,29 +21,32 @@ OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	@mkdir -p $(BUILD_DIR)
+	@-mkdir "$(BUILD_DIR)"
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/%.o: src/%.c
-	@mkdir -p $(BUILD_DIR)
+	@-mkdir "$(BUILD_DIR)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR)
+	-rm -rf "$(BUILD_DIR)"
+	-rmdir /S /Q "$(BUILD_DIR)"
 
 test: $(TARGET)
 	./tests/run.sh
 
 install: $(TARGET)
-	@mkdir -p $(BIN_DIR)
-	@if [ -f "$(TARGET)" ]; then \
-		install -m 755 "$(TARGET)" "$(BIN_DIR)/$(BIN_NAME)"; \
-	elif [ -f "$(TARGET_EXE)" ]; then \
-		install -m 755 "$(TARGET_EXE)" "$(BIN_DIR)/$(BIN_NAME)"; \
-	else \
-		echo "missing build target: $(TARGET) or $(TARGET_EXE)"; \
-		exit 1; \
-	fi
+ifeq ($(OS),Windows_NT)
+	@-mkdir "$(BIN_DIR)"
+	copy /Y "$(TARGET)" "$(BIN_DIR)\\$(BIN_NAME)" >nul
+else
+	@mkdir -p "$(BIN_DIR)"
+	install -m 755 "$(TARGET)" "$(BIN_DIR)/$(BIN_NAME)"
+endif
 
 uninstall:
+ifeq ($(OS),Windows_NT)
+	-del /Q "$(BIN_DIR)\\$(BIN_NAME)"
+else
 	rm -f "$(BIN_DIR)/$(BIN_NAME)"
+endif
