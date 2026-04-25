@@ -2494,7 +2494,10 @@ static void write_bso_object(const char *output_path, const byte_buf_t *output, 
 		for (size_t i = 0; i < obj_count; ++i) {
 			symbol_records[i].name_offset = obj_syms[i].name_offset;
 			symbol_records[i].value = obj_syms[i].defined ? obj_syms[i].value : 0;
-			uint32_t flags = BSO_SYMBOL_GLOBAL;
+			uint32_t flags = 0;
+			if (obj_syms[i].name && obj_syms[i].name[0] != 'L') {
+				flags |= BSO_SYMBOL_GLOBAL;
+			}
 			if (obj_syms[i].defined) {
 				flags |= BSO_SYMBOL_DEFINED;
 			}

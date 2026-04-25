@@ -116,6 +116,16 @@ static int chs_macho_symbol_rank(const ChsSymbol *symbol) {
     return 0;
 }
 
+static bool chs_macho_hide_symbol(const ChsSymbol *symbol) {
+    if (symbol == NULL || symbol->name == NULL) {
+        return false;
+    }
+    if (symbol->name[0] == 'L') {
+        return true;
+    }
+    return false;
+}
+
 static bool chs_macho_append_fixed_string(ChsBuffer *buffer, const char *text, size_t width, ChsError *error) {
     size_t length;
     char fixed[16];
@@ -200,6 +210,13 @@ static bool chs_macho_append_relocations(ChsBuffer *buffer,
                 break;
         }
 
+        if (symbol_index_map[section->relocations[index].symbol_index] == UINT32_MAX) {
+            chs_set_error(error,
+                          "relocation references hidden symbol index %zu",
+                          section->relocations[index].symbol_index);
+            return false;
+        }
+
         packed = (symbol_index_map[section->relocations[index].symbol_index] & 0x00ffffffu) |
                  ((section->relocations[index].pc_relative ? 1u : 0u) << 24) |
                  (chs_macho_relocation_width(&section->relocations[index]) << 25) |
@@ -248,19 +265,39 @@ bool chs_write_macho_object(const ChsObject *object, const char *output_path, Ch
         goto cleanup;
     }
 
-    symbol_count = object->symbol_count;
-    sort_entries = calloc(symbol_count, sizeof(*sort_entries));
-    symbols = calloc(symbol_count, sizeof(*symbols));
-    symbol_index_map = calloc(symbol_count, sizeof(*symbol_index_map));
-    if ((symbol_count != 0 && (sort_entries == NULL || symbols == NULL || symbol_index_map == NULL))) {
+    symbol_count = 0;
+    for (index = 0; index < object->symbol_count; ++index) {
+        if (!chs_macho_hide_symbol(&object->symbols[index])) {
+            ++symbol_count;
+        }
+    }
+
+    sort_entries = calloc(symbol_count == 0 ? 1u : symbol_count, sizeof(*sort_entries));
+    symbols = calloc(symbol_count == 0 ? 1u : symbol_count, sizeof(*symbols));
+    symbol_index_map = calloc(object->symbol_count == 0 ? 1u : object->symbol_count, sizeof(*symbol_index_map));
+    if ((symbol_count != 0 && (sort_entries == NULL || symbols == NULL)) ||
+        (object->symbol_count != 0 && symbol_index_map == NULL)) {
         chs_set_error(error, "out of memory allocating Mach-O symbol tables");
         goto cleanup;
     }
 
-    for (index = 0; index < symbol_count; ++index) {
-        sort_entries[index].object_symbol_index = index;
-        sort_entries[index].undefined_symbol = !object->symbols[index].defined;
-        sort_entries[index].external_symbol = object->symbols[index].global_binding || object->symbols[index].external_reference;
+    for (index = 0; index < object->symbol_count; ++index) {
+        symbol_index_map[index] = UINT32_MAX;
+    }
+
+    {
+        size_t emit_index;
+
+        emit_index = 0;
+        for (index = 0; index < object->symbol_count; ++index) {
+            if (chs_macho_hide_symbol(&object->symbols[index])) {
+                continue;
+            }
+            sort_entries[emit_index].object_symbol_index = index;
+            sort_entries[emit_index].undefined_symbol = !object->symbols[index].defined;
+            sort_entries[emit_index].external_symbol = object->symbols[index].global_binding || object->symbols[index].external_reference;
+            ++emit_index;
+        }
     }
 
     for (index = 0; index < symbol_count; ++index) {

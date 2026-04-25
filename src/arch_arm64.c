@@ -659,6 +659,50 @@ static uint32_t chs_arm64_encode_shift_variable(const char *mnemonic,
     return base | ((uint32_t) rm << 16) | ((uint32_t) rn << 5) | (uint32_t) rd;
 }
 
+static bool chs_arm64_encode_shift_immediate(const char *mnemonic,
+                                             bool is_64_bit,
+                                             unsigned rd,
+                                             unsigned rn,
+                                             unsigned shift,
+                                             uint32_t *encoded) {
+    uint32_t base;
+    uint32_t immr;
+    uint32_t imms;
+    unsigned width;
+
+    if (encoded == NULL) {
+        return false;
+    }
+
+    width = is_64_bit ? 64u : 32u;
+    if (shift >= width) {
+        return false;
+    }
+
+    if (strcmp(mnemonic, "lsl") == 0) {
+        base = is_64_bit ? 0xD3400000u : 0x53000000u; /* UBFM */
+        immr = (uint32_t) ((width - shift) & (width - 1u));
+        imms = (uint32_t) (width - 1u - shift);
+    } else if (strcmp(mnemonic, "lsr") == 0) {
+        base = is_64_bit ? 0xD3400000u : 0x53000000u; /* UBFM */
+        immr = (uint32_t) shift;
+        imms = (uint32_t) (width - 1u);
+    } else if (strcmp(mnemonic, "asr") == 0) {
+        base = is_64_bit ? 0x93400000u : 0x13000000u; /* SBFM */
+        immr = (uint32_t) shift;
+        imms = (uint32_t) (width - 1u);
+    } else {
+        return false;
+    }
+
+    *encoded = base |
+               ((immr & 0x3fu) << 16) |
+               ((imms & 0x3fu) << 10) |
+               ((uint32_t) rn << 5) |
+               (uint32_t) rd;
+    return true;
+}
+
 static uint32_t chs_arm64_encode_fmov_d_from_x(unsigned dd, unsigned xn) {
     return 0x9E670000u | ((uint32_t) xn << 5) | (uint32_t) dd;
 }
@@ -1518,12 +1562,33 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
     if (strcmp(mnemonic, "cmp") == 0 && operand_count == 2) {
         ChsArm64Register left;
         ChsArm64Register right;
+        int64_t immediate;
 
-        if (!chs_arm64_parse_register(operands[0], &left) || !chs_arm64_parse_register(operands[1], &right)) {
+        if (!chs_arm64_parse_register(operands[0], &left) || left.is_zero) {
+            chs_set_error(error, "invalid cmp left operand: %s", operands_text);
+            return false;
+        }
+
+        if (chs_arm64_parse_register(operands[1], &right)) {
+            encoded->encoded = chs_arm64_encode_cmp_register(left.is_64_bit, left.index, right.index);
+            return true;
+        }
+
+        if (!chs_arm64_parse_immediate(operands[1], &immediate)) {
             chs_set_error(error, "invalid cmp operands: %s", operands_text);
             return false;
         }
-        encoded->encoded = chs_arm64_encode_cmp_register(left.is_64_bit, left.index, right.index);
+        if (immediate < 0 || immediate > 4095) {
+            chs_set_error(error, "cmp immediate out of range (0..4095): %s", operands_text);
+            return false;
+        }
+
+        encoded->encoded = chs_arm64_encode_add_sub_immediate(true,
+                                                               true,
+                                                               left.is_64_bit,
+                                                               31,
+                                                               left.index,
+                                                               (uint32_t) immediate);
         return true;
     }
 
@@ -1638,23 +1703,44 @@ static bool chs_arm64_encode_instruction(const ChsObject *object,
         ChsArm64Register destination;
         ChsArm64Register left;
         ChsArm64Register right;
+        int64_t immediate;
 
         if (!chs_arm64_parse_register(operands[0], &destination) ||
-            !chs_arm64_parse_register(operands[1], &left) ||
-            !chs_arm64_parse_register(operands[2], &right)) {
+            !chs_arm64_parse_register(operands[1], &left)) {
             chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
             return false;
         }
-        if (destination.is_64_bit != left.is_64_bit ||
-            destination.is_64_bit != right.is_64_bit) {
+        if (destination.is_64_bit != left.is_64_bit) {
             chs_set_error(error, "%s register width mismatch: %s", mnemonic, operands_text);
             return false;
         }
-        encoded->encoded = chs_arm64_encode_shift_variable(mnemonic,
-                                                           destination.is_64_bit,
-                                                           destination.index,
-                                                           left.index,
-                                                           right.index);
+
+        if (chs_arm64_parse_register(operands[2], &right)) {
+            if (destination.is_64_bit != right.is_64_bit) {
+                chs_set_error(error, "%s register width mismatch: %s", mnemonic, operands_text);
+                return false;
+            }
+            encoded->encoded = chs_arm64_encode_shift_variable(mnemonic,
+                                                               destination.is_64_bit,
+                                                               destination.index,
+                                                               left.index,
+                                                               right.index);
+            return true;
+        }
+
+        if (!chs_arm64_parse_immediate(operands[2], &immediate) || immediate < 0) {
+            chs_set_error(error, "invalid %s operands: %s", mnemonic, operands_text);
+            return false;
+        }
+        if (!chs_arm64_encode_shift_immediate(mnemonic,
+                                              destination.is_64_bit,
+                                              destination.index,
+                                              left.index,
+                                              (unsigned) immediate,
+                                              &encoded->encoded)) {
+            chs_set_error(error, "%s immediate out of range: %s", mnemonic, operands_text);
+            return false;
+        }
         return true;
     }
 

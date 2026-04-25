@@ -1,5 +1,6 @@
 #include "chs/object.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,6 +127,10 @@ static int chs_elf_symbol_rank(const ChsSymbol *symbol) {
     return symbol->global_binding || symbol->external_reference || !symbol->defined ? 1 : 0;
 }
 
+static bool chs_elf_hide_symbol(const ChsSymbol *symbol) {
+    return symbol != NULL && symbol->name != NULL && symbol->name[0] == 'L';
+}
+
 bool chs_write_elf64_object(const ChsObject *object, const char *output_path, ChsError *error) {
     ChsBuffer buffer;
     ChsBuffer shstrtab;
@@ -159,7 +164,12 @@ bool chs_write_elf64_object(const ChsObject *object, const char *output_path, Ch
         }
     }
 
-    symbol_count = object->symbol_count + 1;
+    symbol_count = 1;
+    for (symbol_index = 0; symbol_index < object->symbol_count; ++symbol_index) {
+        if (!chs_elf_hide_symbol(&object->symbols[symbol_index])) {
+            ++symbol_count;
+        }
+    }
     total_section_headers = 1 + object->section_count + relocation_section_count + 3;
     section_headers = calloc(total_section_headers, sizeof(*section_headers));
     symbols = calloc(symbol_count, sizeof(*symbols));
@@ -175,9 +185,23 @@ bool chs_write_elf64_object(const ChsObject *object, const char *output_path, Ch
     }
 
     for (symbol_index = 0; symbol_index < object->symbol_count; ++symbol_index) {
-        symbol_order[symbol_index] = symbol_index;
+        symbol_index_map[symbol_index] = UINT32_MAX;
     }
-    for (symbol_index = 1; symbol_index < object->symbol_count; ++symbol_index) {
+
+    {
+        size_t emit_index;
+
+        emit_index = 0;
+        for (symbol_index = 0; symbol_index < object->symbol_count; ++symbol_index) {
+            if (chs_elf_hide_symbol(&object->symbols[symbol_index])) {
+                continue;
+            }
+            symbol_order[emit_index] = symbol_index;
+            ++emit_index;
+        }
+    }
+
+    for (symbol_index = 1; symbol_index + 1 < symbol_count; ++symbol_index) {
         size_t rank_index;
 
         rank_index = symbol_index;
@@ -194,7 +218,7 @@ bool chs_write_elf64_object(const ChsObject *object, const char *output_path, Ch
     }
 
     local_symbol_count = 1;
-    for (symbol_index = 0; symbol_index < object->symbol_count; ++symbol_index) {
+    for (symbol_index = 0; symbol_index + 1 < symbol_count; ++symbol_index) {
         const ChsSymbol *symbol;
         uint32_t name_index;
         unsigned char info;
@@ -308,7 +332,16 @@ bool chs_write_elf64_object(const ChsObject *object, const char *output_path, Ch
                 section_headers[relocation_header_index].size = object->sections[section_index].relocation_count * 24u;
                 for (relocation_index = 0; relocation_index < object->sections[section_index].relocation_count; ++relocation_index) {
                     uint64_t info;
-                    info = ((uint64_t) symbol_index_map[object->sections[section_index].relocations[relocation_index].symbol_index] << 32) |
+                    uint32_t mapped_symbol_index;
+
+                    mapped_symbol_index = symbol_index_map[object->sections[section_index].relocations[relocation_index].symbol_index];
+                    if (mapped_symbol_index == UINT32_MAX) {
+                        chs_set_error(error,
+                                      "relocation references hidden symbol index %zu",
+                                      object->sections[section_index].relocations[relocation_index].symbol_index);
+                        goto cleanup;
+                    }
+                    info = ((uint64_t) mapped_symbol_index << 32) |
                            chs_elf_relocation_type(&object->sections[section_index].relocations[relocation_index]);
                     if (!chs_buffer_append_u64le(&buffer, object->sections[section_index].relocations[relocation_index].offset, error) ||
                         !chs_buffer_append_u64le(&buffer, info, error) ||
